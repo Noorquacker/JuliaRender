@@ -13,3 +13,9 @@ Started in the Fall Break of my junior year of high school, a fresh, sweet pre-p
 - Use `i` and `k` to increase/decrease the amount of iterations, respectively. When reaching the max number of iterations, the code draws a pixel as black to let you know that it's hit its max.
 
 Have fun with this. This was just to teach myself how to multithread intense algorithms in C and how to use SDL2. This was originally written in C, until I discovered C++ templates and immediately jumped on the bandwagon.
+
+## Demo images
+
+![zoomed fully out](https://github.com/Noorquacker/JuliaRender/raw/main/demo1.png)
+
+![partially zoomed in](https://github.com/Noorquacker/JuliaRender/raw/main/demo2.png)
