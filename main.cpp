@@ -7,20 +7,14 @@
 #include <inttypes.h>
 #include <SDL2/SDL_thread.h>
 #include <unistd.h>
+#include "ocl_render.h"
+#include "CL/opencl.hpp"
+#include "util.h"
+#include <fstream>
 
 using namespace std;
 
-//yes this was all copied from stackoverflow
-struct rgb {
-		double r;       // a fraction between 0 and 1
-		double g;       // a fraction between 0 and 1
-		double b;       // a fraction between 0 and 1
-};
-struct hsv {
-		double h;       // angle in degrees
-		double s;       // a fraction between 0 and 1
-		double v;       // a fraction between 0 and 1
-};
+
 rgb hsv2rgb(hsv in) {
 	double      hh, p, q, t, ff;
 	long        i;
@@ -82,19 +76,6 @@ void set_pixelBuffer(Uint32* pixelBuffer, int x, int y, Uint32 pixel) {
 	*target_pixel = pixel;
 }
 
-struct threadSettings {
-		int threadTotal;
-		int threadID;
-		SDL_Surface* surface;
-		int iter;
-		int precision;
-		long double offsetX;
-		long double offsetY;
-		long double scale;
-		complex<long double> juliaInit;
-		Uint32* pixelBuffer;
-		bool mandelbrotSelect;
-};
 
 template<class T> int test_julia(complex<T> z, complex<T> c, int i, int imax) {
 	if(i == imax) {
@@ -202,6 +183,32 @@ int main() {
 	}
 	int THREADS = sysconf(_SC_NPROCESSORS_ONLN);
 	printf("Detected %i threads\n", THREADS);
+
+	
+	// OpenCL go brrrrr
+	bool cpu = false;
+#ifdef __OPENCL_H
+	cl::Device cl_device = easy_device(0);
+	cl::Context context({cl_device});
+	cl::Program::Sources sources;
+	ifstream ifs("kernel_src.ocl");
+	string src = slurp(ifs);
+	sources.push_back({src.c_str(), src.length()});
+	cl::Program program({context, src});
+	if(program.build({cl_device}) != CL_SUCCESS){
+		cpu = true;
+		cerr << "***OpenCL compile error***\n" << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(cl_device) << endl;
+	}
+	cl::CommandQueue queue(context, cl_device);
+	cl::Kernel render_kernel = cl::Kernel(program, "not_main");
+	
+	// wtf is a buffer???
+	cl::Buffer settings_buffer(context, CL_MEM_READ_WRITE, sizeof(clSettings));
+	cl::Buffer output_buffer(context, CL_MEM_READ_WRITE, sizeof(Uint32) * 1000000);
+	
+	int cl_threads = 32; // Idk why but everything is 32 core?
+#endif
+	
 	//malloc the pixelBuffer
 	//I know this isn't needed anymore but whatever
 	Uint32* pixelBuffer = (Uint32*)malloc(sizeof(Uint32) * 1000000);
@@ -220,6 +227,7 @@ int main() {
 		SDL_Thread* threads[THREADS];
 		//threadsettings MUST be stored per thread. otherwise one thread loses its settings and outputs black
 		threadSettings settings[THREADS];
+		
 		for(int i = 0; i < THREADS; i++) {
 			settings[i].threadTotal = THREADS;
 			settings[i].threadID = i;
@@ -232,11 +240,35 @@ int main() {
 			settings[i].juliaInit = juliaInit;
 			settings[i].pixelBuffer = pixelBuffer;
 			settings[i].mandelbrotSelect = mandelbrotSelect;
-			threads[i] = SDL_CreateThread(threadedMandelbrot, "JuliaRender worker thread", (void*)&settings[i]);
+			
 		}
-		for(int i = 0; i < THREADS; i++) {
-			SDL_WaitThread(threads[i], NULL);
+		if(cpu) {
+			for(int i = 0; i < THREADS; i++) {
+				threads[i] = SDL_CreateThread(threadedMandelbrot, "JuliaRender worker thread", (void*)&settings[i]);
+			}
+			for(int i = 0; i < THREADS; i++) {
+				SDL_WaitThread(threads[i], NULL);
+			}
 		}
+		else {
+			clSettings cl_settings;
+			cl_settings.mandelbrotSelect = mandelbrotSelect;
+			cl_settings.iter = iter;
+			cl_settings.jiI = juliaInit.imag();
+			cl_settings.jiR = juliaInit.real();
+			cl_settings.offsetX = offsetX;
+			cl_settings.offsetY = offsetY;
+			cl_settings.scale = scale;
+			queue.enqueueWriteBuffer(settings_buffer, CL_TRUE, 0, sizeof(clSettings), &cl_settings);
+			
+			render_kernel.setArg(0, settings_buffer);
+			render_kernel.setArg(1, output_buffer);
+			queue.enqueueNDRangeKernel(render_kernel, cl::NullRange, cl::NDRange(cl_threads), cl::NullRange);
+			
+			queue.finish();
+			queue.enqueueReadBuffer(output_buffer, CL_TRUE, 0, sizeof(Uint32)*1000000, pixelBuffer);
+		}
+		
 		//add crosshair
 		set_pixelBuffer(pixelBuffer, 500, 500, 16777215);
 		set_pixelBuffer(pixelBuffer, 501, 501, 16777215);
@@ -258,6 +290,7 @@ int main() {
 				scale = pow(2,log2(scale)+(int)(e.key.keysym.sym == SDLK_o)-(int)(e.key.keysym.sym == SDLK_l));
 				//precision += (int)(e.key.keysym.sym == SDLK_y);
 				mandelbrotSelect = e.key.keysym.sym == SDLK_h ? !mandelbrotSelect : mandelbrotSelect;
+				cpu = e.key.keysym.sym == SDLK_y ? !cpu : cpu;
 				iter += (int)(e.key.keysym.sym == SDLK_i) - (int)(e.key.keysym.sym == SDLK_k);
 				juliaInit += complex<long double>(0.01, 0.01) * complex<long double>(((int)e.key.keysym.sym == SDLK_KP_6) - ((int)e.key.keysym.sym == SDLK_KP_4),((int)e.key.keysym.sym == SDLK_KP_8) - ((int)e.key.keysym.sym == SDLK_KP_2));
 			}
@@ -280,7 +313,7 @@ int main() {
 			scale = 1;
 			zoom = 1;
 		}
-		printf("FPS: %i at %i iterations, %lix zoom, offset (%Lg,%Lg), frametime %Lgms, juliaInit %Lg %Lg, precision level %i\n", fps, iter, zoom, offsetX, offsetY, duration, real(juliaInit), imag(juliaInit), precision);
+		printf("FPS: %i at %i iterations, %lix zoom, offset (%Lg,%Lg), frametime %Lgms, juliaInit %Lg %Lg, precision level %i, CPU mode %i\n", fps, iter, zoom, offsetX, offsetY, duration, real(juliaInit), imag(juliaInit), precision, cpu);
 	}
 	free((void*)pixelBuffer);
 	SDL_DestroyWindow(window);

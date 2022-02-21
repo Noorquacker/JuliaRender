@@ -1,0 +1,171 @@
+// #include <complex.h>
+
+// Look at me I'm a peasant and have to copy my code from util.h to here because waaaaah I'm too dumb to just concatenate util.h with this file like a gigachad
+//yes this was all copied from stackoverflow
+typedef struct {
+		double r;       // a fraction between 0 and 1
+		double g;       // a fraction between 0 and 1
+		double b;       // a fraction between 0 and 1
+} rgb;
+typedef struct {
+		double h;       // angle in degrees
+		double s;       // a fraction between 0 and 1
+		double v;       // a fraction between 0 and 1
+} hsv;
+
+struct clSettings {
+	int iter;
+	double offsetX;
+	double offsetY;
+	double scale;
+	double jiR;
+	double jiI;
+	bool mandelbrotSelect;
+};
+
+// MOTHER TRUCKER I NEED TO DEFINE MY OWN COMPLEX NUMBERS
+typedef struct {
+	float r;
+	float i;
+} cf;
+
+rgb hsv2rgb(hsv in) {
+	double      hh, p, q, t, ff;
+	long        i;
+	rgb         out;
+	if(in.s <= 0.0) {       // < is bogus, just shuts up warnings
+		out.r = in.v;
+		out.g = in.v;
+		out.b = in.v;
+		return out;
+	}
+	hh = in.h;
+	if(hh >= 360.0) hh = 0.0;
+	hh /= 60.0;
+	i = (long)hh;
+	ff = hh - i;
+	p = in.v * (1.0 - in.s);
+	q = in.v * (1.0 - (in.s * ff));
+	t = in.v * (1.0 - (in.s * (1.0 - ff)));
+	switch(i) {
+		case 0:
+			out.r = in.v;
+			out.g = t;
+			out.b = p;
+		break;
+		case 1:
+			out.r = q;
+			out.g = in.v;
+			out.b = p;
+		break;
+		case 2:
+			out.r = p;
+			out.g = in.v;
+			out.b = t;
+		break;
+
+		case 3:
+			out.r = p;
+			out.g = q;
+			out.b = in.v;
+		break;
+		case 4:
+			out.r = t;
+			out.g = p;
+			out.b = in.v;
+		break;
+		case 5:
+		default:
+			out.r = in.v;
+			out.g = p;
+			out.b = q;
+		break;
+	}
+	return out;
+}
+
+inline cf csquare(const cf a) {
+	cf b;
+	b.r = a.r * a.r - a.i * a.i;
+	b.i = 2 * a.r * a.i;
+	return b;
+}
+
+inline float cabsf(const cf a) {
+	return sqrt(a.r * a.r + a.i * a.i);
+}
+
+int test_mandelbrot(cf z, cf c, int i, const int imax) {
+	if(i == imax) {
+		return imax;
+	}
+	else if(i == 0) {
+		//If you want very weird results, remove this
+		//Might've discovered a new field in math from buggy code idk
+		z.r = 0;
+		z.i = 0;
+	}
+	cf a = csquare(z);
+	a.r += c.r;
+	a.i += c.i;
+	if(cabsf(a) > 2) {
+		return i;
+	}
+	else {
+		return test_mandelbrot(a, c, i+1, imax);
+	}
+}
+
+int test_julia(cf z, cf c, int i, const int imax) {
+	if(i == imax) {
+		return imax;
+	}
+	cf a = csquare(c);
+	a.r += z.r;
+	a.i += z.i;
+	if(cabsf(a) > 2) {
+		return i;
+	}
+	else {
+		return test_julia(z, a, i+1, imax);
+	}
+}
+
+void kernel not_main(global const struct clSettings* settings_ptr, global uint* pixelBuffer) {
+	int thread_id = get_global_id(0);
+	hsv thing = {(float)thread_id / 32. * 360., 1., 1.};
+	
+	struct clSettings settings = *settings_ptr;
+	int mandel;
+	float scale = settings.scale;
+	float oX = settings.offsetX, oY = settings.offsetY;
+	
+	for(int y = thread_id; y <= 999; y += 32) {
+		for(int x = 0; x <= 999; x++) {
+			
+			cf c = {scale*(x-499.)/250., scale*((y-499.)/-250.)};
+			c.r += oX/250.;
+			c.i += oY/-250;
+			cf z = {settings.jiR, settings.jiI};
+			if(settings.mandelbrotSelect) {
+				mandel = test_mandelbrot(z, c, 0, settings.iter);
+			}
+			else {
+				mandel = test_julia(z, c, 0, settings.iter);
+			}
+			
+// 			rgb c1 = hsv2rgb(thing);
+// 			int color = ((int)(255.*c1.r) << 16) + ((int)(255.*c1.g) << 8) + (int)(255.*c1.b);
+			hsv c2;
+			c2.s = 1.0;
+			c2.v = mandel == settings.iter ? 0 : 1;
+			//c2.h = mandel/(float)settings.iter * 360;
+			c2.h = fmod(mandel/50. * 360., 360.);
+			//hsv 2 rgb
+			rgb c1 = hsv2rgb(c2);
+			int color = ((int)(255.*c1.r) << 16) + ((int)(255.*c1.g) << 8) + (int)(255.*c1.b);
+			pixelBuffer[y * 1000 + x] = color;
+		}
+	}
+}
+
